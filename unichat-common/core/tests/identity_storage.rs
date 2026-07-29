@@ -18,6 +18,7 @@ fn temp_path(name: &str) -> std::path::PathBuf {
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join(format!("{name}-{}.db", std::process::id()));
     let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_dir_all(&path); // the store is now a vault directory
     path
 }
 
@@ -78,7 +79,7 @@ fn store_create_open_round_trip_with_contacts() {
         restored.fingerprint().unwrap(),
         profile.fingerprint().unwrap()
     );
-    std::fs::remove_file(&path).unwrap();
+    std::fs::remove_dir_all(&path).unwrap();
 }
 
 #[test]
@@ -90,30 +91,41 @@ fn wrong_passphrase_rejected() {
         UnlockedStore::open(&path, &pass("wrong")),
         Err(CryptoError::WrongPassphrase)
     ));
-    std::fs::remove_file(&path).unwrap();
+    std::fs::remove_dir_all(&path).unwrap();
 }
 
 #[test]
 fn store_tampering_rejected() {
     let path = temp_path("tamper");
     let profile = Profile::create("alice").unwrap();
-    UnlockedStore::create(&path, &pass("pw"), &profile).unwrap();
-    let good = std::fs::read(&path).unwrap();
+    let store = UnlockedStore::create(&path, &pass("pw"), &profile).unwrap();
+    drop(store);
 
-    // Flip a byte in every structural region: salt, params, mk wrap,
-    // body salt, body start, body end.
-    for off in [10usize, 26, 40, 90, 120, good.len() - 1] {
-        let mut bad = good.clone();
-        bad[off] ^= 0x01;
-        std::fs::write(&path, &bad).unwrap();
-        assert!(
-            UnlockedStore::open(&path, &pass("pw")).is_err(),
-            "tampering at offset {off} was accepted"
-        );
+    // The vault holds the anchor (envelope) plus the opaque-named profile
+    // object. Flipping any byte of either must make open fail (AEAD auth).
+    let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(&path)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .collect();
+    files.sort();
+    assert!(files.len() >= 2, "expected anchor + profile object in the vault");
+
+    for f in &files {
+        let good = std::fs::read(f).unwrap();
+        for off in [0usize, good.len() / 2, good.len() - 1] {
+            let mut bad = good.clone();
+            bad[off] ^= 0x01;
+            std::fs::write(f, &bad).unwrap();
+            assert!(
+                UnlockedStore::open(&path, &pass("pw")).is_err(),
+                "tampering {:?} at offset {off} was accepted",
+                f.file_name().unwrap()
+            );
+        }
+        std::fs::write(f, &good).unwrap(); // restore before the next file
     }
-    std::fs::write(&path, &good).unwrap();
     assert!(UnlockedStore::open(&path, &pass("pw")).is_ok());
-    std::fs::remove_file(&path).unwrap();
+    std::fs::remove_dir_all(&path).unwrap();
 }
 
 #[test]
@@ -139,7 +151,7 @@ fn change_passphrase_keeps_data() {
         restored.fingerprint().unwrap(),
         profile.fingerprint().unwrap()
     );
-    std::fs::remove_file(&path).unwrap();
+    std::fs::remove_dir_all(&path).unwrap();
 }
 
 #[test]

@@ -350,6 +350,7 @@ enum ContactCmd {
 }
 
 fn main() -> Result<()> {
+    unichat_core::integrity::enforce(); // refuse to run a tampered build
     match Cli::parse().command {
         Command::Profile { cmd } => match cmd {
             ProfileCmd::Create { store, name } => create(&store, &name),

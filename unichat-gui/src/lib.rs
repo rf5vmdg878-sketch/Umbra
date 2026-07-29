@@ -20,6 +20,9 @@ pub struct Build {
 
 /// Launch the Umbra window. Returns when the window closes.
 pub fn run(build: Build) -> Result<(), String> {
+    // Tamper-evidence gate: refuse to run a modified build (see core::integrity).
+    unichat_core::integrity::enforce();
+
     let mut viewport = egui::ViewportBuilder::default()
         .with_inner_size([1180.0, 760.0])
         .with_min_inner_size([900.0, 580.0])

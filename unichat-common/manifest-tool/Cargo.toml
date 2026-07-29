@@ -1,0 +1,15 @@
+[package]
+name = "umbra-manifest"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Generate + Ed25519-sign the Umbra integrity manifest (release tooling)."
+
+[[bin]]
+name = "umbra-manifest"
+path = "src/main.rs"
+
+[dependencies]
+unichat-core = { workspace = true }
+ed25519-dalek = { workspace = true }
+zeroize = { workspace = true }
