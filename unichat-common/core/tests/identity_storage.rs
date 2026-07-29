@@ -155,6 +155,44 @@ fn change_passphrase_keeps_data() {
 }
 
 #[test]
+fn tor_state_encrypted_at_rest_round_trip() {
+    use unichat_core::storage::archive::{archive_dir, extract_dir, wipe_dir};
+
+    // A fake arti "state" dir with a nested onion-key file.
+    let base = std::env::temp_dir().join(format!("umbra-arch-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let state = base.join("state");
+    std::fs::create_dir_all(state.join("keys")).unwrap();
+    std::fs::write(state.join("hostname"), b"abcdefghij.onion").unwrap();
+    std::fs::write(state.join("keys").join("ed25519_id"), [1u8, 2, 3, 4, 5]).unwrap();
+
+    // Pack -> store as an opaque encrypted vault object -> wipe the plaintext.
+    let vpath = temp_path("torstate");
+    let profile = Profile::create("alice").unwrap();
+    let store = UnlockedStore::create(&vpath, &pass("pw"), &profile).unwrap();
+    let blob = archive_dir(&state).unwrap();
+    store.put_object("tor-state", &blob).unwrap();
+    wipe_dir(&state);
+    assert!(!state.exists(), "plaintext state should be wiped");
+
+    // Unlock later: fetch, extract, and confirm the keys survived intact.
+    let fetched = store.get_object("tor-state").unwrap().unwrap();
+    let restored = base.join("restored");
+    extract_dir(&fetched, &restored).unwrap();
+    assert_eq!(
+        std::fs::read(restored.join("hostname")).unwrap(),
+        b"abcdefghij.onion"
+    );
+    assert_eq!(
+        std::fs::read(restored.join("keys").join("ed25519_id")).unwrap(),
+        vec![1u8, 2, 3, 4, 5]
+    );
+
+    let _ = std::fs::remove_dir_all(&base);
+    let _ = std::fs::remove_dir_all(&vpath);
+}
+
+#[test]
 fn duplicate_and_self_contacts_rejected() {
     let mut alice = Profile::create("alice").unwrap();
     let bob = Profile::create("bob").unwrap();

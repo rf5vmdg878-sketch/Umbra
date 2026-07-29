@@ -35,6 +35,7 @@
 //!   object intact.
 //! - Legacy single-file `UPROFDB` stores are migrated into a vault on first open.
 
+pub mod archive;
 pub mod vault;
 
 use std::path::{Path, PathBuf};

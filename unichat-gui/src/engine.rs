@@ -179,6 +179,16 @@ struct Session {
     use_tor: bool,
 }
 
+// On lock (Command::Lock drops the session) or clean engine shutdown, stop Tor
+// and re-encrypt its state back into the vault, wiping the plaintext dir.
+#[cfg(feature = "tor")]
+impl Drop for Session {
+    fn drop(&mut self) {
+        crate::tor_ep::shutdown();
+        crate::tor_ep::persist_state(&self.store);
+    }
+}
+
 pub struct EngineHandle {
     pub tx: Sender<Command>,
     pub rx: Receiver<Event>,
@@ -298,6 +308,10 @@ fn handle(cmd: Command, session: &mut Option<Session>, evt: &Sender<Event>) {
 }
 
 fn open_session(session: &mut Option<Session>, store: UnlockedStore, profile: Profile, evt: &Sender<Event>) {
+    // Decrypt the Tor state from the vault into the working dir before any Tor use.
+    #[cfg(feature = "tor")]
+    crate::tor_ep::restore_state(&store);
+
     let view = ProfileView {
         name: profile.display_name.clone(),
         fingerprint: profile.fingerprint().unwrap_or_default(),
