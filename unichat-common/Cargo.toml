@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["core", "seal", "manifest-tool"]
+members = ["core", "seal", "manifest-tool", "umbra-build"]
 
 # Shared workspace for the unified secure communications suite.
 # Holds the common engine library (`unichat-core`) and the transport-agnostic

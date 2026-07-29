@@ -1,5 +1,9 @@
 # Build output
 **/target/
+# Packaged archives from umbra-build
+/dist/
+# Linux SymCrypt fetched by umbra-build
+unichat-common/vendor/symcrypt/linux/
 
 # Vendored SymCrypt binary is not committed — fetch it (see
 # unichat-common/vendor/symcrypt/README.md).

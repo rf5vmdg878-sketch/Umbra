@@ -149,7 +149,7 @@ pub fn verify_startup(pubkey: &[u8; 32]) -> IntegrityStatus {
     IntegrityStatus::Verified
 }
 
-/// True if a debugger is attached to this process (Windows).
+/// True if a debugger is attached to this process.
 #[cfg(windows)]
 pub fn debugger_present() -> bool {
     // kernel32!IsDebuggerPresent — no crate needed.
@@ -158,7 +158,19 @@ pub fn debugger_present() -> bool {
     }
     unsafe { IsDebuggerPresent() != 0 }
 }
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
+pub fn debugger_present() -> bool {
+    // A tracer (gdb/strace/ptrace) sets a non-zero TracerPid in /proc/self/status.
+    if let Ok(s) = std::fs::read_to_string("/proc/self/status") {
+        for line in s.lines() {
+            if let Some(v) = line.strip_prefix("TracerPid:") {
+                return v.trim().parse::<u32>().map(|p| p != 0).unwrap_or(false);
+            }
+        }
+    }
+    false
+}
+#[cfg(not(any(windows, target_os = "linux")))]
 pub fn debugger_present() -> bool {
     false
 }
@@ -175,7 +187,7 @@ pub fn spawn_guard(pubkey: [u8; 32]) {
             eprintln!("integrity: runtime tamper detected ({what}); exiting");
             std::process::exit(3);
         }
-        #[cfg(all(windows, not(debug_assertions)))]
+        #[cfg(all(any(windows, target_os = "linux"), not(debug_assertions)))]
         if debugger_present() {
             eprintln!("integrity: debugger attached at runtime; exiting");
             std::process::exit(3);
@@ -200,7 +212,7 @@ pub fn enforce() {
             std::process::exit(3);
         }
     }
-    #[cfg(all(windows, not(debug_assertions)))]
+    #[cfg(all(any(windows, target_os = "linux"), not(debug_assertions)))]
     if RELEASE_PUBKEY != [0u8; 32] && debugger_present() {
         eprintln!("[integrity] debugger detected; refusing to run.");
         std::process::exit(3);
