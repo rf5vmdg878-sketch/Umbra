@@ -1,0 +1,21 @@
+[package]
+name = "unichat-gui-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Umbra desktop app (Tor fork): direct-TCP and Tor onion transport."
+
+[[bin]]
+name = "umbra"
+path = "src/main.rs"
+
+[features]
+default = []
+# Build with the arti onion transport (heavy). Forwards to unichat-gui/tor.
+tor = ["unichat-gui/tor"]
+
+[dependencies]
+unichat-gui = { path = "../../unichat-gui", default-features = false }
+
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"

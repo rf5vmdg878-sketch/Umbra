@@ -1,0 +1,22 @@
+[package]
+name = "unichat-gui"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+description = "Umbra — shared branded GUI for the unified secure communications suite (both forks)."
+
+# Standalone crate (its own workspace root) so it isn't pulled into the
+# unichat-common core test cycle. Both fork `gui` binaries depend on it by path.
+[workspace]
+
+[features]
+default = []
+# Surface the Tor onion transport controls (forwards to unichat-core/tor).
+tor = ["unichat-core/tor"]
+
+[dependencies]
+unichat-core = { path = "../unichat-common/core", default-features = false }
+eframe = { version = "0.35", default-features = false, features = ["glow", "default_fonts"] }
+egui = "0.35"
+zeroize = { version = "1.9", features = ["derive"] }
+rfd = "0.17"

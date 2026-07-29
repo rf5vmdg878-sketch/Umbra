@@ -1,0 +1,17 @@
+[workspace]
+resolver = "2"
+members = ["cli", "gui"]
+
+# No-Tor fork: only the `cli` binary lives here. All shared library code
+# (crypto, identity, session, storage, sync, transport) comes from
+# ../unichat-common/core, and the offline `unichat-seal` tool is built from
+# ../unichat-common. This fork uses the direct-TCP transport only (the `tor`
+# feature of the shared core is never enabled).
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+
+[workspace.dependencies]
+zeroize = { version = "1.9.0", features = ["derive"] }

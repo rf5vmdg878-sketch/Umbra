@@ -1,0 +1,16 @@
+[package]
+name = "unichat-gui-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Umbra desktop app (no-Tor fork): direct-TCP transport."
+
+[[bin]]
+name = "umbra"
+path = "src/main.rs"
+
+[dependencies]
+unichat-gui = { path = "../../unichat-gui" }
+
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"

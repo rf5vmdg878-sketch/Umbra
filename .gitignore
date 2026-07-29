@@ -1,0 +1,17 @@
+# Build output
+**/target/
+
+# Vendored SymCrypt binary is not committed — fetch it (see
+# unichat-common/vendor/symcrypt/README.md).
+unichat-common/vendor/symcrypt/*.dll
+unichat-common/vendor/symcrypt/*.lib
+unichat-common/vendor/symcrypt/*.pdb
+unichat-common/vendor/symcrypt/*.zip
+
+# Runtime secrets / artifacts — never commit
+*.profile
+*.key
+*.usealed
+*.spool
+*.tor-state/
+*.tor-cache/

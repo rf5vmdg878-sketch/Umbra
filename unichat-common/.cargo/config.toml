@@ -1,0 +1,4 @@
+[env]
+# symcrypt-sys's build script reads this to locate symcrypt.lib at link time.
+# Relative to this workspace root (unichat-common/).
+SYMCRYPT_LIB_PATH = { value = "vendor/symcrypt/dll", relative = true }

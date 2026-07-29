@@ -1,0 +1,43 @@
+[workspace]
+resolver = "2"
+members = ["core", "seal"]
+
+# Shared workspace for the unified secure communications suite.
+# Holds the common engine library (`unichat-core`) and the transport-agnostic
+# offline file tool (`unichat-seal`), used by BOTH the no-Tor and Tor forks.
+# Each fork (../unichat-notor, ../unichat-tor) is a thin workspace containing
+# only its `cli`, depending on `core` here by path — the Tor fork enabling the
+# `tor` feature. This is where all shared code lives; edit once.
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+
+[workspace.dependencies]
+# Microsoft SymCrypt: FIPS-validated implementations of ML-KEM-768, AES-256-GCM,
+# X25519 (Curve25519 ECDH), SHA3-256, SHAKE-256, HKDF, and the system DRBG.
+# Pinned exactly; linked dynamically against the official prebuilt symcrypt.dll
+# (vendor/symcrypt, release v103.11.0).
+symcrypt = "=0.5.1"
+symcrypt-sys = "=0.4.0"
+
+# Argon2id (RFC 9106) — not part of SymCrypt; audited RustCrypto implementation.
+argon2 = "=0.5.3"
+
+# Ed25519 signatures — SymCrypt implements no EdDSA (ECDSA on NIST curves
+# only), and v3 onion-service identities are Ed25519, so the identity layer
+# uses the audited dalek implementation (the same family Tor's arti uses).
+ed25519-dalek = "=3.0.0"
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+zeroize = { version = "1.9.0", features = ["derive"] }
+subtle = "2.6"
+thiserror = "2"
+base64 = "=0.22.1"
+
+# Shared binaries depend on the core library by path.
+unichat-core = { path = "core" }
+anyhow = "1"

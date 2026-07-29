@@ -1,0 +1,5 @@
+[env]
+# symcrypt-sys's build script reads this to locate symcrypt.lib at link time.
+# The DLL is vendored once in the shared workspace; path is relative to this
+# fork's root (unichat-tor/).
+SYMCRYPT_LIB_PATH = { value = "../unichat-common/vendor/symcrypt/dll", relative = true }

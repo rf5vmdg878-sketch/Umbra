@@ -1,0 +1,17 @@
+[package]
+name = "unichat-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "unichat client CLI: profiles, contacts (Phase 2); chat and transport arrive in later phases."
+
+[[bin]]
+name = "unichat"
+path = "src/main.rs"
+
+[dependencies]
+unichat-core = { path = "../../unichat-common/core" }
+zeroize.workspace = true
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+rpassword = "7"

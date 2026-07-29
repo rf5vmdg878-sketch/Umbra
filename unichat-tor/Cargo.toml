@@ -1,0 +1,17 @@
+[workspace]
+resolver = "2"
+members = ["cli", "gui"]
+
+# Tor fork: only the `cli` binary lives here. All shared library code comes from
+# ../unichat-common/core, built with its `tor` feature enabled (via the cli's
+# own `tor` feature) to pull in the arti onion-service transport. The offline
+# `unichat-seal` tool is built from ../unichat-common. Build the Tor transport
+# with `cargo build -p unichat-cli --features tor`.
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+
+[workspace.dependencies]
+zeroize = { version = "1.9.0", features = ["derive"] }

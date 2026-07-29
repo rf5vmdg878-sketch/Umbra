@@ -1,0 +1,40 @@
+[package]
+name = "unichat-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Core engine for the unified secure communications suite. Phase 1: crypto + sealed envelope."
+build = "build.rs"
+
+[dependencies]
+symcrypt.workspace = true
+symcrypt-sys.workspace = true
+argon2.workspace = true
+zeroize.workspace = true
+subtle.workspace = true
+thiserror.workspace = true
+base64.workspace = true
+ed25519-dalek.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+# Tor onion-service transport (feature-gated so the base build stays light).
+# arti is Tor implemented in Rust; these power `transport::tor`.
+arti-client = { version = "0.43", default-features = false, features = ["tokio", "rustls", "onion-service-client", "onion-service-service", "static-sqlite"], optional = true }
+tor-hsservice = { version = "0.43", optional = true }
+tor-cell = { version = "0.43", optional = true }
+tor-rtcompat = { version = "0.43", features = ["tokio", "rustls"], optional = true }
+safelog = { version = "0.8", optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "io-util", "net", "sync", "macros"], optional = true }
+futures = { version = "0.3", optional = true }
+
+[features]
+default = []
+# Build the Tor onion-service transport. Heavy (pulls in all of arti).
+tor = ["dep:arti-client", "dep:tor-hsservice", "dep:tor-cell", "dep:tor-rtcompat", "dep:safelog", "dep:tokio", "dep:futures"]
+
+[dev-dependencies]
+hex = "0.4"
+# Independent X-Wing implementation (RustCrypto), used ONLY in tests to
+# cross-validate the SymCrypt-backed implementation against another vendor.
+x-wing = { version = "=0.1.0", features = ["getrandom"] }
