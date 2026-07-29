@@ -35,6 +35,34 @@ calls run on the direct-TCP path (`call dial/answer` without `--tor`).
 
 Automation: set `UNICHAT_PASSPHRASE` / `UNICHAT_NEW_PASSPHRASE` to avoid prompts.
 
+## Sanitize / factory reset (maintenance & security)
+
+Securely purge app-managed state back to installed defaults — for cleaning a
+machine before maintenance or decommissioning. Each file is overwritten before
+removal. What's cleaned is **tailorable**; user files you saved elsewhere (chat
+downloads) and the installed program are never touched.
+
+**Desktop app**: Settings → Maintenance. Tick what to wipe (profiles/history,
+Tor state), click *Sanitize…* then *Confirm wipe*. The app wipes the selection
+and locks.
+
+**CLI** (dry-run by default — add `--yes` to actually wipe):
+```
+unichat sanitize                          # preview wiping everything
+unichat sanitize --yes                     # wipe profiles + Tor state
+unichat sanitize --profiles --yes          # only the profile vault
+unichat sanitize --tor --yes               # only Tor working dirs
+unichat sanitize --store <path> --profiles --yes   # a specific vault
+```
+
+**Relay** (dry-run by default — add `--yes`):
+```
+umbra-relay --sanitize [config.toml]          # preview (spool + config)
+umbra-relay --sanitize --spool --yes           # wipe only the encrypted spool
+umbra-relay --sanitize --config --yes          # wipe only the config + torrc
+umbra-relay --sanitize --all --yes             # wipe both; run --gen-config to restart fresh
+```
+
 ## Running the relay
 
 ```

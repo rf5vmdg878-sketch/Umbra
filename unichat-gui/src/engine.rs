@@ -138,6 +138,12 @@ pub enum Command {
         video: bool,
     },
     SetUseTor(bool),
+    /// Securely purge app state back to installed defaults (maintenance/security).
+    Sanitize {
+        store: String,
+        profiles: bool,
+        tor: bool,
+    },
 }
 
 /// Messages from the engine to the UI.
@@ -298,6 +304,28 @@ fn handle(cmd: Command, session: &mut Option<Session>, evt: &Sender<Event>) {
         }
         Command::StartMailbox { bind } => spawn_mailbox(&bind, evt),
         Command::StartRelay { bind } => spawn_relay(&bind, evt),
+        Command::Sanitize { store, profiles, tor } => {
+            // Lock first (drops the session), then securely wipe the selection.
+            *session = None;
+            let mut targets = Vec::new();
+            if profiles {
+                targets.extend(unichat_core::sanitize::profile_targets(std::path::Path::new(&store)));
+            }
+            if tor {
+                targets.extend(unichat_core::sanitize::tor_targets());
+            }
+            let report = unichat_core::sanitize::purge(&targets);
+            let _ = evt.send(Event::Locked);
+            status(
+                evt,
+                format!(
+                    "sanitized: removed {} item(s), ~{} KB — reset to installed defaults",
+                    report.removed_count(),
+                    report.total_bytes() / 1024
+                ),
+                Level::Good,
+            );
+        }
         other => {
             let Some(s) = session.as_mut() else {
                 return status(evt, "unlock a profile first", Level::Warn);

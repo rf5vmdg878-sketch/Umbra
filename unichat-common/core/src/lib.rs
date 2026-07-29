@@ -11,6 +11,7 @@ pub mod crypto;
 pub mod groups;
 pub mod identity;
 pub mod integrity;
+pub mod sanitize;
 pub mod session;
 pub mod share;
 pub mod storage;

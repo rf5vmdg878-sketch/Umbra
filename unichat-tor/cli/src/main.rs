@@ -73,6 +73,26 @@ enum Command {
         #[command(subcommand)]
         cmd: CallCmd,
     },
+    /// Securely purge app state back to installed defaults (maintenance/security).
+    /// Dry-run by default; pass --yes to actually wipe. Choose what to clean with
+    /// --profiles / --tor (default: everything).
+    Sanitize {
+        /// Profile vault to target (default: the app's temp default store).
+        #[arg(long)]
+        store: Option<PathBuf>,
+        /// Wipe profile vault(s) (profiles, contacts, groups, history, onion keys).
+        #[arg(long)]
+        profiles: bool,
+        /// Wipe Tor working dirs (state + cache, incl. ./*.tor-state, ./*.tor-cache).
+        #[arg(long)]
+        tor: bool,
+        /// Wipe everything (default when no category flag is given).
+        #[arg(long)]
+        all: bool,
+        /// Actually perform the wipe (otherwise it's a dry-run preview).
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -543,7 +563,67 @@ fn main() -> Result<()> {
                 state_dir,
             } => groups_cmd::fetch_msgs(&store, &name, &via, tor, state_dir.as_deref()),
         },
+        Command::Sanitize {
+            store,
+            profiles,
+            tor,
+            all,
+            yes,
+        } => sanitize(store, profiles, tor, all, yes),
     }
+}
+
+/// Securely purge selected app state back to installed defaults.
+fn sanitize(
+    store: Option<PathBuf>,
+    profiles: bool,
+    tor: bool,
+    all: bool,
+    yes: bool,
+) -> Result<()> {
+    use unichat_core::sanitize as san;
+
+    let (do_profiles, do_tor) = if !profiles && !tor && !all {
+        (true, true)
+    } else {
+        (profiles || all, tor || all)
+    };
+
+    let store = store.unwrap_or_else(|| std::env::temp_dir().join("umbra.profile"));
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+
+    let mut targets: Vec<PathBuf> = Vec::new();
+    if do_profiles {
+        targets.extend(san::profile_targets(&store));
+    }
+    if do_tor {
+        targets.extend(san::tor_targets());
+        targets.extend(san::cli_tor_dirs_in(&cwd));
+    }
+
+    let present = san::existing(&targets);
+    if present.is_empty() {
+        println!("sanitize: nothing to remove (already at defaults).");
+        return Ok(());
+    }
+    if !yes {
+        println!("sanitize DRY-RUN — would securely wipe:");
+        for (p, sz) in &present {
+            println!("  {}  ({} KB)", p.display(), sz / 1024);
+        }
+        println!("\nRe-run with --yes to perform the wipe.");
+        return Ok(());
+    }
+    let report = san::purge(&targets);
+    println!(
+        "sanitized: removed {} item(s), ~{} KB reclaimed — back to installed defaults.",
+        report.removed_count(),
+        report.total_bytes() / 1024
+    );
+    for (p, e) in &report.errors {
+        eprintln!("  ! {}: {e}", p.display());
+    }
+    Ok(())
 }
 
 /// Passphrase source: UNICHAT_PASSPHRASE env var (automation) or prompt.

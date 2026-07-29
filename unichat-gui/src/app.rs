@@ -77,6 +77,11 @@ pub struct App {
     notify_preview: bool,
     raw_crypto: bool,
     applied_scale: bool,
+
+    // Sanitize / factory-reset (Settings → Maintenance).
+    sanitize_profiles: bool,
+    sanitize_tor: bool,
+    sanitize_confirm: bool,
 }
 
 impl App {
@@ -128,6 +133,9 @@ impl App {
             notify_preview: false,
             raw_crypto: false,
             applied_scale: false,
+            sanitize_profiles: true,
+            sanitize_tor: true,
+            sanitize_confirm: false,
         }
     }
 
@@ -1067,6 +1075,48 @@ impl App {
             });
             ui.checkbox(&mut self.show_inspector, "Show security inspector");
             ui.checkbox(&mut self.raw_crypto, "Show raw crypto readout per message");
+        });
+        ui.add_space(10.0);
+
+        ui.group(|ui| {
+            ui.set_width(ui.available_width());
+            eyebrow(ui, "Maintenance");
+            ui.label(
+                RichText::new("Factory reset: securely wipe the selected app state back to installed defaults. This cannot be undone.")
+                    .color(theme::MUTED)
+                    .size(12.5),
+            );
+            ui.checkbox(&mut self.sanitize_profiles, "Profiles, contacts, groups & history");
+            ui.checkbox(&mut self.sanitize_tor, "Tor working state (onion keys, cache)");
+            ui.add_space(4.0);
+            if !self.sanitize_confirm {
+                let any = self.sanitize_profiles || self.sanitize_tor;
+                if ui.add_enabled(any, egui::Button::new("Sanitize…")).clicked() {
+                    self.sanitize_confirm = true;
+                }
+            } else {
+                ui.horizontal(|ui| {
+                    if ui
+                        .button(RichText::new("Confirm wipe").color(theme::BAD))
+                        .clicked()
+                    {
+                        self.send(Command::Sanitize {
+                            store: self.store_path.trim().into(),
+                            profiles: self.sanitize_profiles,
+                            tor: self.sanitize_tor,
+                        });
+                        self.sanitize_confirm = false;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        self.sanitize_confirm = false;
+                    }
+                });
+                ui.label(
+                    RichText::new("This permanently erases the selected data and locks the app.")
+                        .color(theme::WARN)
+                        .size(11.5),
+                );
+            }
         });
         ui.add_space(10.0);
 
