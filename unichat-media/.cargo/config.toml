@@ -1,0 +1,2 @@
+[env]
+SYMCRYPT_LIB_PATH = { value = "../unichat-common/vendor/symcrypt/dll", relative = true }

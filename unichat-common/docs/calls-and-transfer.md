@@ -32,14 +32,28 @@ and end-to-end through the call relay.
   across audio/video, replayed, or reflected. Frames are length-prefixed.
 - `MediaKind::{Audio, Video}` demuxes the two streams after decryption.
 
-**Device/codec seam (not yet wired):** actual microphone/camera capture and
-Opus/VP8 encode+decode plug into the `MediaSource` / `MediaSink` traits. This
-crate carries and protects whatever bytes they produce; it does not itself touch
-hardware or run codecs. That integration (e.g. `cpal` + `opus` for audio, a
-camera crate + a video codec for video) needs a machine with real devices to
-build and verify, and is the remaining work to make it a "pick up and hear/see"
-product. The cryptographic media transport is complete and tested with synthetic
-frames.
+**Device layer (`unichat-media`):** the real microphone/camera capture and
+playback live in the standalone `unichat-media` crate, kept out of the core so
+the crypto build stays light. It provides:
+
+- `AudioIo` — real mic capture and speaker playback via `cpal`. Audio is mono
+  16-bit PCM framed in ~20 ms blocks (Opus would compress ~10×, but its bindings
+  need `cmake`, which isn't on this toolchain; PCM is uncompressed but real).
+  A lock-free ring buffer decouples cpal's real-time callback from the call.
+- `Camera` — real camera capture via `nokhwa`, encoded to JPEG (MJPEG-style)
+  with the pure-Rust `jpeg-encoder`; the far side decodes with `image` to RGBA.
+- `run_call(stream, call_secret, is_caller, video, on_video, status)` — a live
+  full-duplex call: it splits the handshaked stream, derives the two directional
+  media keys (`media_key_pair`), and runs capture→encrypt→send on one thread and
+  receive→decrypt→play/display on another. Incoming video frames are delivered
+  to `on_video` for the GUI to show; audio plays on the speaker.
+
+The GUI (`umbra`) and the CLI (`unichat call`) both drive real calls through this
+by default (the `media` feature, on by default; build with `--no-default-features`
+to fall back to the synthetic path). Note: whether you actually *hear* and *see*
+the other side can only be validated on a machine with a working mic, camera, and
+speaker attached — the code compiles and is API-correct, but headless CI cannot
+exercise the hardware.
 
 ## Call rendezvous relay (`core::call::relay` + `umbra-relay`)
 
@@ -63,7 +77,7 @@ location-hidden call relay.
 
 `unichat call send-file|recv-file --relay <addr> --id <call-id> …` for E2E file
 transfer, and `unichat call dial|answer --relay <addr> --id <call-id> [--video]`
-for a voice/video call (synthetic media until the device layer is wired). Both
+for a live voice/video call using the real mic/camera (`unichat-media`). Both
 sides agree on `--id` out of band (e.g. via a `CallOffer` chat message).
 
 ## Tests (`core/tests/call_xfer.rs`, 5/5)

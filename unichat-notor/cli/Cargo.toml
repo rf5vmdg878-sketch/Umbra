@@ -9,8 +9,14 @@ description = "unichat client CLI: profiles, contacts (Phase 2); chat and transp
 name = "unichat"
 path = "src/main.rs"
 
+[features]
+default = ["media"]
+# Real microphone/camera capture + playback for `call dial`/`call answer`.
+media = ["dep:unichat-media"]
+
 [dependencies]
 unichat-core = { path = "../../unichat-common/core" }
+unichat-media = { path = "../../unichat-media", optional = true }
 zeroize.workspace = true
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }

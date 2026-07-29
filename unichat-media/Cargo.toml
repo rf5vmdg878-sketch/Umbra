@@ -1,0 +1,18 @@
+[package]
+name = "unichat-media"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+description = "Real microphone/camera capture + playback for Umbra calls (device + codec layer)."
+
+# Standalone crate so the heavy media deps stay out of the core build.
+[workspace]
+
+[dependencies]
+unichat-core = { path = "../unichat-common/core", default-features = false }
+cpal = "0.18"
+nokhwa = { version = "0.10", features = ["input-native"] }
+jpeg-encoder = "0.7"
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
+ringbuf = "0.5"
+zeroize = "1"

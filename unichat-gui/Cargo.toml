@@ -10,12 +10,15 @@ description = "Umbra — shared branded GUI for the unified secure communication
 [workspace]
 
 [features]
-default = []
+default = ["media"]
 # Surface the Tor onion transport controls (forwards to unichat-core/tor).
 tor = ["unichat-core/tor"]
+# Real microphone/camera capture + playback for live calls.
+media = ["dep:unichat-media"]
 
 [dependencies]
 unichat-core = { path = "../unichat-common/core", default-features = false }
+unichat-media = { path = "../unichat-media", optional = true }
 eframe = { version = "0.35", default-features = false, features = ["glow", "default_fonts"] }
 egui = "0.35"
 zeroize = { version = "1.9", features = ["derive"] }

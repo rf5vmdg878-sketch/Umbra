@@ -135,6 +135,7 @@ pub enum Command {
     CallAnswer {
         relay: String,
         id: String,
+        video: bool,
     },
     SetUseTor(bool),
 }
@@ -156,6 +157,14 @@ pub enum Event {
         kind: String,
         addr: String,
     },
+    /// A decoded incoming video frame (RGBA) from a live call, for display.
+    VideoFrame {
+        width: u32,
+        height: u32,
+        rgba: Vec<u8>,
+    },
+    /// The live call finished (peer hung up, duration elapsed, or error).
+    CallEnded,
 }
 
 struct Session {
@@ -388,8 +397,8 @@ fn handle_unlocked(cmd: Command, s: &mut Session, evt: &Sender<Event>) {
         Command::CallDial { relay, id, video, seconds } => {
             spawn_call(s, evt, move |ident, xw, tx| call_dial(&relay, &id, ident, xw, video, seconds, &tx))
         }
-        Command::CallAnswer { relay, id } => {
-            spawn_call(s, evt, move |ident, xw, tx| call_answer(&relay, &id, ident, xw, &tx))
+        Command::CallAnswer { relay, id, video } => {
+            spawn_call(s, evt, move |ident, xw, tx| call_answer(&relay, &id, ident, xw, video, &tx))
         }
         _ => {}
     }
@@ -476,10 +485,102 @@ fn call_recv_file(
     }
 }
 
+#[cfg(not(feature = "media"))]
 fn synth(n: usize, i: u32) -> Vec<u8> {
     let mut v = vec![0u8; n];
     v[0..4].copy_from_slice(&i.to_le_bytes());
     v
+}
+
+/// Drive a live call over an already-handshaked stream. With the `media`
+/// feature (default) this captures the real mic/camera, plays received audio,
+/// and forwards decoded video frames to the UI; otherwise it falls back to the
+/// synthetic media path. `max_secs` bounds the caller's side; `None` (callee)
+/// runs until the peer hangs up.
+fn run_call_media(
+    stream: std::net::TcpStream,
+    secret: [u8; 32],
+    caller: bool,
+    video: bool,
+    max_secs: Option<u32>,
+    tx: &Sender<Event>,
+) {
+    #[cfg(feature = "media")]
+    {
+        use std::sync::{Arc, Mutex};
+        // run_call fans status out from several threads, so the callback must be
+        // Sync — wrap the (Send-but-!Sync) event sender in a Mutex.
+        let etx = Arc::new(Mutex::new(tx.clone()));
+        let status_cb: Arc<dyn Fn(String) + Send + Sync> = {
+            let etx = etx.clone();
+            Arc::new(move |m: String| {
+                if let Ok(g) = etx.lock() {
+                    let _ = g.send(Event::Status(m, Level::Info));
+                }
+            })
+        };
+        // Forward decoded incoming video frames to the UI as events.
+        let (vtx, vrx) = std::sync::mpsc::channel::<unichat_media::VideoFrame>();
+        {
+            let etx = tx.clone();
+            std::thread::spawn(move || {
+                while let Ok(f) = vrx.recv() {
+                    let _ = etx.send(Event::VideoFrame {
+                        width: f.width,
+                        height: f.height,
+                        rgba: f.rgba,
+                    });
+                }
+            });
+        }
+        let handle = match unichat_media::run_call(stream, secret, caller, video, Some(vtx), status_cb) {
+            Ok(h) => h,
+            Err(e) => {
+                status(tx, format!("media error: {e}"), Level::Bad);
+                let _ = tx.send(Event::CallEnded);
+                return;
+            }
+        };
+        let start = std::time::Instant::now();
+        loop {
+            if handle.ended() {
+                break;
+            }
+            if let Some(secs) = max_secs {
+                if start.elapsed().as_secs() >= secs as u64 {
+                    break;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(150));
+        }
+        handle.hang_up();
+        let _ = tx.send(Event::CallEnded);
+    }
+    #[cfg(not(feature = "media"))]
+    {
+        use unichat_core::call::{MediaKind, SecureMediaChannel};
+        let mut media = match SecureMediaChannel::new(stream, &secret, caller) {
+            Ok(m) => m,
+            Err(e) => {
+                status(tx, format!("media init: {e}"), Level::Bad);
+                let _ = tx.send(Event::CallEnded);
+                return;
+            }
+        };
+        status(tx, "call connected (E2E)", Level::Good);
+        let frames = max_secs.unwrap_or(5).max(1) * 50;
+        for i in 0..frames {
+            if media.send(MediaKind::Audio, i, &synth(160, i)).is_err() {
+                break;
+            }
+            if video {
+                let _ = media.send(MediaKind::Video, i, &synth(1024, i));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        status(tx, "call ended", Level::Info);
+        let _ = tx.send(Event::CallEnded);
+    }
 }
 
 fn call_dial(
@@ -491,7 +592,6 @@ fn call_dial(
     seconds: u32,
     tx: &Sender<Event>,
 ) {
-    use unichat_core::call::{MediaKind, SecureMediaChannel};
     use unichat_core::session::initiator_handshake;
     status(tx, format!("calling via {relay}…"), Level::Info);
     let conn = match unichat_core::call::rendezvous(&TcpTransport, relay, id.as_bytes(), true) {
@@ -504,22 +604,9 @@ fn call_dial(
     };
     let secret = ch.call_secret().clone();
     let caller = ch.is_initiator();
-    let mut media = match SecureMediaChannel::new(ch.into_inner(), &secret, caller) {
-        Ok(m) => m,
-        Err(e) => return status(tx, format!("media init: {e}"), Level::Bad),
-    };
-    status(tx, "call connected (E2E)", Level::Good);
-    let frames = seconds.max(1) * 50;
-    for i in 0..frames {
-        if media.send(MediaKind::Audio, i, &synth(160, i)).is_err() {
-            break;
-        }
-        if video {
-            let _ = media.send(MediaKind::Video, i, &synth(1024, i));
-        }
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
-    status(tx, format!("call ended — {frames} audio{} frames sent", if video { "+video" } else { "" }), Level::Info);
+    let stream = ch.into_inner();
+    // Caller drives the call for the requested duration (or until the peer drops).
+    run_call_media(stream, *secret, caller, video, Some(seconds), tx);
 }
 
 fn call_answer(
@@ -527,9 +614,9 @@ fn call_answer(
     id: &str,
     ident: Identity,
     xw: XWingPrivate,
+    video: bool,
     tx: &Sender<Event>,
 ) {
-    use unichat_core::call::{MediaKind, SecureMediaChannel};
     use unichat_core::session::responder_handshake;
     status(tx, format!("waiting for call on {relay}…"), Level::Info);
     let conn = match unichat_core::call::rendezvous(&TcpTransport, relay, id.as_bytes(), false) {
@@ -542,23 +629,9 @@ fn call_answer(
     };
     let secret = ch.call_secret().clone();
     let caller = ch.is_initiator();
-    let mut media = match SecureMediaChannel::new(ch.into_inner(), &secret, caller) {
-        Ok(m) => m,
-        Err(e) => return status(tx, format!("media init: {e}"), Level::Bad),
-    };
-    status(tx, "call connected (E2E)", Level::Good);
-    let (mut a, mut v) = (0u64, 0u64);
-    loop {
-        match media.recv() {
-            Ok(Some(f)) => match f.kind {
-                MediaKind::Audio => a += 1,
-                MediaKind::Video => v += 1,
-            },
-            Ok(None) => break,
-            Err(_) => break,
-        }
-    }
-    status(tx, format!("call ended — {a} audio + {v} video frames decrypted"), Level::Good);
+    let stream = ch.into_inner();
+    // Callee stays in the call until the peer hangs up.
+    run_call_media(stream, *secret, caller, video, None, tx);
 }
 
 fn save_and(s: &Session, evt: &Sender<Event>, msg: String, level: Level) {

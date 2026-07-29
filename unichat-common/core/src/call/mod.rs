@@ -26,7 +26,7 @@
 //! codec layer plugs in through [`MediaSource`] / [`MediaSink`]. It carries and
 //! protects whatever bytes those produce.
 
-use std::io::Write;
+use std::io::{Read, Write};
 
 use zeroize::Zeroizing;
 
@@ -205,6 +205,108 @@ impl<S: std::io::Read + std::io::Write> SecureMediaChannel<S> {
 
     pub fn into_inner(self) -> S {
         self.stream
+    }
+}
+
+// --- Split half-channels for full-duplex real-time calls ------------------
+//
+// A live call captures+sends and receives+plays concurrently, so the media
+// stream is split into a write half and a read half (e.g. two clones of a
+// TcpStream). Both sides derive the same directional keys with
+// `media_key_pair`.
+
+/// Directional media keys for `is_caller`: returns `(send_key, recv_key)`.
+pub fn media_key_pair(
+    call_secret: &Zeroizing<[u8; 32]>,
+    is_caller: bool,
+) -> Result<(AeadKey, AeadKey)> {
+    let (c2p, p2c) = media_keys(call_secret)?;
+    Ok(if is_caller { (c2p, p2c) } else { (p2c, c2p) })
+}
+
+fn write_media_frame<W: Write>(
+    w: &mut W,
+    key: &AeadKey,
+    kind: MediaKind,
+    seq: u32,
+    timestamp: u32,
+    payload: &[u8],
+) -> Result<()> {
+    if payload.len() > MAX_MEDIA_FRAME {
+        return Err(CryptoError::Protocol("media frame too large"));
+    }
+    let aad = frame_aad(kind, seq, timestamp);
+    let mut buf = payload.to_vec();
+    key.seal(seq as u64, &aad, &mut buf);
+    let mut frame = Vec::with_capacity(4 + HEADER_LEN + buf.len());
+    frame.extend_from_slice(&((HEADER_LEN + buf.len()) as u32).to_le_bytes());
+    frame.extend_from_slice(&aad);
+    frame.extend_from_slice(&buf);
+    w.write_all(&frame)?;
+    w.flush()?;
+    Ok(())
+}
+
+fn read_media_frame<R: Read>(r: &mut R, key: &AeadKey) -> Result<Option<MediaFrame>> {
+    let mut len = [0u8; 4];
+    match r.read_exact(&mut len) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
+        Err(e) => return Err(CryptoError::Io(e)),
+    }
+    let n = u32::from_le_bytes(len) as usize;
+    if n < HEADER_LEN + 16 || n > HEADER_LEN + MAX_MEDIA_FRAME + 16 {
+        return Err(CryptoError::Protocol("media frame length out of range"));
+    }
+    let mut body = vec![0u8; n];
+    r.read_exact(&mut body)?;
+    let header: [u8; HEADER_LEN] = body[..HEADER_LEN].try_into().unwrap();
+    let kind = MediaKind::from_byte(header[0]).ok_or(CryptoError::Malformed("unknown media kind"))?;
+    let seq = u32::from_le_bytes(header[1..5].try_into().unwrap());
+    let timestamp = u32::from_le_bytes(header[5..9].try_into().unwrap());
+    let mut ct = body[HEADER_LEN..].to_vec();
+    key.open(seq as u64, &header, &mut ct)?;
+    Ok(Some(MediaFrame {
+        kind,
+        seq,
+        timestamp,
+        payload: ct,
+    }))
+}
+
+/// Write (send) half of a duplex media call.
+pub struct MediaSender<W> {
+    w: W,
+    key: AeadKey,
+    seq: u32,
+}
+
+impl<W: Write> MediaSender<W> {
+    pub fn new(w: W, send_key: AeadKey) -> Self {
+        Self { w, key: send_key, seq: 0 }
+    }
+    pub fn send(&mut self, kind: MediaKind, timestamp: u32, payload: &[u8]) -> Result<()> {
+        write_media_frame(&mut self.w, &self.key, kind, self.seq, timestamp, payload)?;
+        self.seq = self
+            .seq
+            .checked_add(1)
+            .ok_or(CryptoError::Protocol("media sequence exhausted (rekey)"))?;
+        Ok(())
+    }
+}
+
+/// Read (receive) half of a duplex media call.
+pub struct MediaReceiver<R> {
+    r: R,
+    key: AeadKey,
+}
+
+impl<R: Read> MediaReceiver<R> {
+    pub fn new(r: R, recv_key: AeadKey) -> Self {
+        Self { r, key: recv_key }
+    }
+    pub fn recv(&mut self) -> Result<Option<MediaFrame>> {
+        read_media_frame(&mut self.r, &self.key)
     }
 }
 

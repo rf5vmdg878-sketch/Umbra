@@ -67,6 +67,9 @@ pub struct App {
     call_out: String,
     call_video: bool,
     call_seconds: u32,
+    /// Latest decoded incoming video frame from a live call.
+    call_texture: Option<egui::TextureHandle>,
+    in_call: bool,
 
     use_tor: bool,
     text_size: f32,
@@ -113,6 +116,8 @@ impl App {
             relay_bind: "127.0.0.1:9910".into(),
             call_relay: "127.0.0.1:9930".into(),
             call_id: String::new(),
+            call_texture: None,
+            in_call: false,
             call_file: String::new(),
             call_out: std::env::temp_dir().join("umbra-inbox").to_string_lossy().into_owned(),
             call_video: false,
@@ -130,12 +135,29 @@ impl App {
         let _ = self.engine.tx.send(cmd);
     }
 
-    fn drain_events(&mut self) {
+    fn drain_events(&mut self, ctx: &egui::Context) {
         while let Ok(ev) = self.engine.rx.try_recv() {
             match ev {
                 Event::Status(msg, level) => {
                     self.status = msg;
                     self.status_level = level;
+                }
+                Event::VideoFrame { width, height, rgba } => {
+                    self.in_call = true;
+                    let img = egui::ColorImage::from_rgba_unmultiplied(
+                        [width as usize, height as usize],
+                        &rgba,
+                    );
+                    match &mut self.call_texture {
+                        Some(tex) => tex.set(img, egui::TextureOptions::LINEAR),
+                        None => {
+                            self.call_texture =
+                                Some(ctx.load_texture("call_video", img, egui::TextureOptions::LINEAR));
+                        }
+                    }
+                }
+                Event::CallEnded => {
+                    self.in_call = false;
                 }
                 Event::Unlocked(p) => {
                     self.profile = Some(p);
@@ -185,7 +207,7 @@ impl eframe::App for App {
             self.applied_scale = true;
         }
         ctx.request_repaint_after(Duration::from_millis(150));
-        self.drain_events();
+        self.drain_events(&ctx);
 
         if self.profile.is_none() {
             self.lock_screen(ui);
@@ -905,13 +927,32 @@ impl App {
                     self.send(Command::CallAnswer {
                         relay: self.call_relay.trim().into(),
                         id: self.call_id.trim().into(),
+                        video: self.call_video,
                     });
                 }
+                if self.in_call {
+                    ui.colored_label(theme::GOOD, "● live");
+                }
             });
+
+            // Incoming video from the peer (real camera frames, decoded).
+            if let Some(tex) = &self.call_texture {
+                ui.add_space(8.0);
+                let avail = ui.available_width().min(480.0);
+                let size = tex.size_vec2();
+                let scale = (avail / size.x).min(1.0);
+                ui.image(egui::load::SizedTexture::new(tex.id(), size * scale));
+            }
+
+            ui.add_space(4.0);
             ui.label(
-                RichText::new("Media is synthetic in this build (no mic/camera wired); the encrypted media path is real. Watch the status bar for progress.")
-                    .color(theme::FAINT)
-                    .size(11.5),
+                if cfg!(feature = "media") {
+                    RichText::new("Live: captures your microphone and (if enabled) camera, plays the peer's audio, and shows their video above. All frames are end-to-end encrypted; the relay sees only ciphertext.")
+                } else {
+                    RichText::new("This build was compiled without the media feature — the encrypted media path runs with synthetic frames. Rebuild with --features media for real mic/camera.")
+                }
+                .color(theme::FAINT)
+                .size(11.5),
             );
         });
     }
