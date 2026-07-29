@@ -559,7 +559,7 @@ fn run_call_media(
     #[cfg(not(feature = "media"))]
     {
         use unichat_core::call::{MediaKind, SecureMediaChannel};
-        let mut media = match SecureMediaChannel::new(stream, &secret, caller) {
+        let mut media = match SecureMediaChannel::new(stream, &Zeroizing::new(secret), caller) {
             Ok(m) => m,
             Err(e) => {
                 status(tx, format!("media init: {e}"), Level::Bad);

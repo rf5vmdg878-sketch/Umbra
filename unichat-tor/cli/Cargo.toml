@@ -10,12 +10,15 @@ name = "unichat"
 path = "src/main.rs"
 
 [features]
-default = []
+default = ["media"]
 # Enable the Tor onion-service transport (pulls in arti via unichat-core).
 tor = ["unichat-core/tor"]
+# Real microphone/camera capture + playback for `call dial`/`call answer`.
+media = ["dep:unichat-media"]
 
 [dependencies]
 unichat-core = { path = "../../unichat-common/core", default-features = false }
+unichat-media = { path = "../../unichat-media", optional = true }
 zeroize.workspace = true
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }

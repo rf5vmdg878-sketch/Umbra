@@ -10,9 +10,11 @@ name = "umbra"
 path = "src/main.rs"
 
 [features]
-default = []
+default = ["media"]
 # Build with the arti onion transport (heavy). Forwards to unichat-gui/tor.
 tor = ["unichat-gui/tor"]
+# Real microphone/camera capture + playback for live calls.
+media = ["unichat-gui/media"]
 
 [dependencies]
 unichat-gui = { path = "../../unichat-gui", default-features = false }

@@ -1,8 +1,13 @@
 //! `unichat call` — E2E file transfer + voice/video calls through a relay.
 //! Tor build: runs over TCP, or over Tor with `--tor` (the whole flow is
-//! generic over the stream, so the onion path works unchanged). Media is
-//! synthetic until a real capture/codec layer is wired into
-//! `unichat_core::call::{MediaSource, MediaSink}`.
+//! generic over the stream, so the onion path works unchanged).
+//!
+//! With the `media` feature (default), a **direct-TCP** call uses the real
+//! microphone/camera via `unichat-media` (live full-duplex). The `--tor` path
+//! stays on the synthetic media path: the real-time engine needs to split the
+//! socket for simultaneous send/receive (`TcpStream::try_clone`), which the
+//! onion stream doesn't offer — for a private call, front the TCP relay with a
+//! Tor onion service at the network layer instead (see the GUI's model).
 
 use std::io::{Read, Write};
 use std::path::Path;
@@ -103,6 +108,68 @@ fn run_answer<C: Read + Write>(conn: C, profile: &Profile) -> Result<()> {
     Ok(())
 }
 
+/// Live full-duplex call with the real mic/camera/speaker over a direct-TCP
+/// stream. `max_secs` bounds the caller; `None` (callee) runs until the peer
+/// hangs up. Incoming video is decoded but dropped (the CLI has no display).
+#[cfg(feature = "media")]
+fn run_media_call(
+    stream: std::net::TcpStream,
+    secret: [u8; 32],
+    caller: bool,
+    video: bool,
+    max_secs: Option<u32>,
+) {
+    use std::sync::Arc;
+    let status: Arc<dyn Fn(String) + Send + Sync> = Arc::new(|m: String| println!("[call] {m}"));
+    let handle = match unichat_media::run_call(stream, secret, caller, video, None, status) {
+        Ok(h) => h,
+        Err(e) => {
+            eprintln!("[call] media error: {e}");
+            return;
+        }
+    };
+    println!(
+        "[call] live — {} (hang up with Ctrl-C)",
+        if video { "voice + video" } else { "voice" }
+    );
+    let start = std::time::Instant::now();
+    loop {
+        if handle.ended() {
+            break;
+        }
+        if let Some(s) = max_secs {
+            if start.elapsed().as_secs() >= s as u64 {
+                break;
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(150));
+    }
+    handle.hang_up();
+    println!("[call] ended");
+}
+
+#[cfg(feature = "media")]
+fn run_dial_real(conn: std::net::TcpStream, profile: &Profile, video: bool, seconds: u32) -> Result<()> {
+    let ch = initiator_handshake(conn, &profile.identity()?, &profile.xwing()?)
+        .context("secure handshake failed")?;
+    println!("[session] connected E2E; peer authenticated");
+    let secret = ch.call_secret().clone();
+    let caller = ch.is_initiator();
+    run_media_call(ch.into_inner(), *secret, caller, video, Some(seconds));
+    Ok(())
+}
+
+#[cfg(feature = "media")]
+fn run_answer_real(conn: std::net::TcpStream, profile: &Profile) -> Result<()> {
+    let ch = responder_handshake(conn, &profile.identity()?, &profile.xwing()?)
+        .context("secure handshake failed")?;
+    println!("[session] connected E2E; peer authenticated");
+    let secret = ch.call_secret().clone();
+    let caller = ch.is_initiator();
+    run_media_call(ch.into_inner(), *secret, caller, false, None);
+    Ok(())
+}
+
 // --- transport dispatch: TCP, or Tor (feature-gated) ---
 
 #[cfg(feature = "tor")]
@@ -159,11 +226,31 @@ pub fn recv_file_cmd(store: &Path, relay: &str, id: &str, out: &Path, tor: bool,
 pub fn dial(store: &Path, relay: &str, id: &str, video: bool, seconds: u32, tor: bool, state: Option<&Path>) -> Result<()> {
     let (_u, profile) = open_store(store)?;
     println!("[call] dialing (id={id})");
+    // Direct-TCP calls use the real mic/camera; the arti onion path can't split
+    // the stream for real-time duplex, so it stays synthetic.
+    #[cfg(feature = "media")]
+    {
+        if !tor {
+            let cid = id_bytes(id);
+            let conn = rendezvous(&TcpTransport, relay, &cid, true)
+                .with_context(|| format!("reaching relay {relay}"))?;
+            return run_dial_real(conn, &profile, video, seconds);
+        }
+    }
     dispatch!(relay, id, true, tor, state, |c| run_dial(c, &profile, video, seconds))
 }
 
 pub fn answer(store: &Path, relay: &str, id: &str, tor: bool, state: Option<&Path>) -> Result<()> {
     let (_u, profile) = open_store(store)?;
     println!("[call] answering (id={id})");
+    #[cfg(feature = "media")]
+    {
+        if !tor {
+            let cid = id_bytes(id);
+            let conn = rendezvous(&TcpTransport, relay, &cid, false)
+                .with_context(|| format!("reaching relay {relay}"))?;
+            return run_answer_real(conn, &profile);
+        }
+    }
     dispatch!(relay, id, false, tor, state, |c| run_answer(c, &profile))
 }
