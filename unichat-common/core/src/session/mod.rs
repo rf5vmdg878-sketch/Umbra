@@ -118,6 +118,10 @@ pub struct SecureChannel<S> {
     send_ctr: u64,
     recv_ctr: u64,
     peer_identity: [u8; 32],
+    /// Secret keying material for sub-protocols (calls, bulk transfer) that want
+    /// their own independent keys derived from this authenticated session.
+    call_secret: Zeroizing<[u8; 32]>,
+    is_initiator: bool,
 }
 
 fn app_aad(dir: u8, ctr: u64) -> [u8; 17] {
@@ -132,6 +136,17 @@ impl<S: std::io::Read + std::io::Write> SecureChannel<S> {
     /// The peer's authenticated long-term identity public key.
     pub fn peer_identity(&self) -> &[u8; 32] {
         &self.peer_identity
+    }
+
+    /// Secret shared with the peer, for deriving keys for call/transfer
+    /// sub-protocols that run over this session's stream.
+    pub fn call_secret(&self) -> &Zeroizing<[u8; 32]> {
+        &self.call_secret
+    }
+
+    /// Whether this side initiated the session (fixes directional key roles).
+    pub fn is_initiator(&self) -> bool {
+        self.is_initiator
     }
 
     /// Send one application message. Monotonic counter + direction are bound
@@ -218,6 +233,16 @@ pub enum AppMsg {
     Chat { id: u32, text: String },
     /// Acknowledge a received chat message.
     ChatAck { id: u32 },
+    /// Offer to send a file (E2E over this session).
+    FileOffer { name: String, size: u64 },
+    /// Accept or decline a file offer.
+    FileAccept { accept: bool },
+    /// One base64 chunk of the file (already inside the encrypted channel).
+    FileChunk { index: u32, last: bool, data: String },
+    /// A call is being requested through a relay: dial this call-id.
+    CallOffer { call_id: String, video: bool },
+    /// Accept or decline a call.
+    CallAccept { accept: bool },
     /// Graceful goodbye.
     Bye,
 }
@@ -235,6 +260,7 @@ fn derive_channel<S>(
     ikm[32..].copy_from_slice(ss_i.as_ref());
     let k_i2r = hkdf_sha256_32(ikm.as_ref(), transcript_hash, HKDF_I2R)?;
     let k_r2i = hkdf_sha256_32(ikm.as_ref(), transcript_hash, HKDF_R2I)?;
+    let call_secret = hkdf_sha256_32(ikm.as_ref(), transcript_hash, b"unichat-call-secret-v1")?;
 
     let (send_key, recv_key, send_dir, recv_dir) = if is_initiator {
         (
@@ -260,6 +286,8 @@ fn derive_channel<S>(
         send_ctr: 0,
         recv_ctr: 0,
         peer_identity,
+        call_secret,
+        is_initiator,
     })
 }
 

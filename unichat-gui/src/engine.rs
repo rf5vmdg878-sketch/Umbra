@@ -11,7 +11,8 @@ use zeroize::Zeroizing;
 
 use unichat_core::groups::relay;
 use unichat_core::groups::{group_open, group_seal, Group};
-use unichat_core::identity::{ContactState, KeyBundle, Profile};
+use unichat_core::crypto::xwing::XWingPrivate;
+use unichat_core::identity::{ContactState, Identity, KeyBundle, Profile};
 use unichat_core::storage::UnlockedStore;
 use unichat_core::sync::mailbox;
 use unichat_core::sync::{open_message, seal_message};
@@ -114,6 +115,26 @@ pub enum Command {
     },
     StartRelay {
         bind: String,
+    },
+    CallSendFile {
+        relay: String,
+        id: String,
+        file: PathBuf,
+    },
+    CallRecvFile {
+        relay: String,
+        id: String,
+        out_dir: PathBuf,
+    },
+    CallDial {
+        relay: String,
+        id: String,
+        video: bool,
+        seconds: u32,
+    },
+    CallAnswer {
+        relay: String,
+        id: String,
     },
     SetUseTor(bool),
 }
@@ -358,8 +379,186 @@ fn handle_unlocked(cmd: Command, s: &mut Session, evt: &Sender<Event>) {
             text,
         } => msg_send(s, evt, &alias, &mailbox, &text),
         Command::MsgCollect { mailbox } => msg_collect(s, evt, &mailbox),
+        Command::CallSendFile { relay, id, file } => {
+            spawn_call(s, evt, move |ident, xw, tx| call_send_file(&relay, &id, ident, xw, &file, &tx))
+        }
+        Command::CallRecvFile { relay, id, out_dir } => {
+            spawn_call(s, evt, move |ident, xw, tx| call_recv_file(&relay, &id, ident, xw, &out_dir, &tx))
+        }
+        Command::CallDial { relay, id, video, seconds } => {
+            spawn_call(s, evt, move |ident, xw, tx| call_dial(&relay, &id, ident, xw, video, seconds, &tx))
+        }
+        Command::CallAnswer { relay, id } => {
+            spawn_call(s, evt, move |ident, xw, tx| call_answer(&relay, &id, ident, xw, &tx))
+        }
         _ => {}
     }
+}
+
+/// Run a call/transfer on its own thread (they can block for the call's
+/// duration) so the engine stays responsive.
+fn spawn_call<F>(s: &Session, evt: &Sender<Event>, f: F)
+where
+    F: FnOnce(Identity, XWingPrivate, Sender<Event>) + Send + 'static,
+{
+    let (ident, xw) = match (s.profile.identity(), s.profile.xwing()) {
+        (Ok(i), Ok(x)) => (i, x),
+        _ => return status(evt, "profile key error", Level::Bad),
+    };
+    let tx = evt.clone();
+    std::thread::spawn(move || f(ident, xw, tx));
+}
+
+fn call_send_file(
+    relay: &str,
+    id: &str,
+    ident: Identity,
+    xw: XWingPrivate,
+    file: &std::path::Path,
+    tx: &Sender<Event>,
+) {
+    use unichat_core::session::initiator_handshake;
+    use unichat_core::xfer::send_file;
+    let data = match std::fs::read(file) {
+        Ok(d) => d,
+        Err(e) => return status(tx, format!("read failed: {e}"), Level::Bad),
+    };
+    let name = file
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "file".into());
+    status(tx, format!("connecting to relay {relay}…"), Level::Info);
+    let conn = match unichat_core::call::rendezvous(&TcpTransport, relay, id.as_bytes(), true) {
+        Ok(c) => c,
+        Err(e) => return status(tx, format!("relay error: {e}"), Level::Bad),
+    };
+    let mut ch = match initiator_handshake(conn, &ident, &xw) {
+        Ok(c) => c,
+        Err(e) => return status(tx, format!("handshake failed: {e}"), Level::Bad),
+    };
+    match send_file(&mut ch, &name, &data) {
+        Ok(true) => status(tx, format!("sent '{name}' ({} B) E2E", data.len()), Level::Good),
+        Ok(false) => status(tx, "peer declined", Level::Warn),
+        Err(e) => status(tx, format!("send failed: {e}"), Level::Bad),
+    }
+}
+
+fn call_recv_file(
+    relay: &str,
+    id: &str,
+    ident: Identity,
+    xw: XWingPrivate,
+    out_dir: &std::path::Path,
+    tx: &Sender<Event>,
+) {
+    use unichat_core::session::responder_handshake;
+    use unichat_core::xfer::recv_file;
+    status(tx, format!("waiting on relay {relay}…"), Level::Info);
+    let conn = match unichat_core::call::rendezvous(&TcpTransport, relay, id.as_bytes(), false) {
+        Ok(c) => c,
+        Err(e) => return status(tx, format!("relay error: {e}"), Level::Bad),
+    };
+    let mut ch = match responder_handshake(conn, &ident, &xw) {
+        Ok(c) => c,
+        Err(e) => return status(tx, format!("handshake failed: {e}"), Level::Bad),
+    };
+    match recv_file(&mut ch, true) {
+        Ok(Some((name, data))) => {
+            std::fs::create_dir_all(out_dir).ok();
+            let safe: String = name.rsplit(['/', '\\']).next().unwrap_or("file")
+                .chars().filter(|c| !c.is_control() && !matches!(c, ':' | '*' | '?' | '"' | '<' | '>' | '|')).collect();
+            let path = out_dir.join(if safe.is_empty() { "file".into() } else { safe });
+            let _ = std::fs::write(&path, &data);
+            status(tx, format!("received '{name}' ({} B) -> {}", data.len(), path.display()), Level::Good);
+        }
+        Ok(None) => status(tx, "no file received", Level::Info),
+        Err(e) => status(tx, format!("receive failed: {e}"), Level::Bad),
+    }
+}
+
+fn synth(n: usize, i: u32) -> Vec<u8> {
+    let mut v = vec![0u8; n];
+    v[0..4].copy_from_slice(&i.to_le_bytes());
+    v
+}
+
+fn call_dial(
+    relay: &str,
+    id: &str,
+    ident: Identity,
+    xw: XWingPrivate,
+    video: bool,
+    seconds: u32,
+    tx: &Sender<Event>,
+) {
+    use unichat_core::call::{MediaKind, SecureMediaChannel};
+    use unichat_core::session::initiator_handshake;
+    status(tx, format!("calling via {relay}…"), Level::Info);
+    let conn = match unichat_core::call::rendezvous(&TcpTransport, relay, id.as_bytes(), true) {
+        Ok(c) => c,
+        Err(e) => return status(tx, format!("relay error: {e}"), Level::Bad),
+    };
+    let ch = match initiator_handshake(conn, &ident, &xw) {
+        Ok(c) => c,
+        Err(e) => return status(tx, format!("handshake failed: {e}"), Level::Bad),
+    };
+    let secret = ch.call_secret().clone();
+    let caller = ch.is_initiator();
+    let mut media = match SecureMediaChannel::new(ch.into_inner(), &secret, caller) {
+        Ok(m) => m,
+        Err(e) => return status(tx, format!("media init: {e}"), Level::Bad),
+    };
+    status(tx, "call connected (E2E)", Level::Good);
+    let frames = seconds.max(1) * 50;
+    for i in 0..frames {
+        if media.send(MediaKind::Audio, i, &synth(160, i)).is_err() {
+            break;
+        }
+        if video {
+            let _ = media.send(MediaKind::Video, i, &synth(1024, i));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    status(tx, format!("call ended — {frames} audio{} frames sent", if video { "+video" } else { "" }), Level::Info);
+}
+
+fn call_answer(
+    relay: &str,
+    id: &str,
+    ident: Identity,
+    xw: XWingPrivate,
+    tx: &Sender<Event>,
+) {
+    use unichat_core::call::{MediaKind, SecureMediaChannel};
+    use unichat_core::session::responder_handshake;
+    status(tx, format!("waiting for call on {relay}…"), Level::Info);
+    let conn = match unichat_core::call::rendezvous(&TcpTransport, relay, id.as_bytes(), false) {
+        Ok(c) => c,
+        Err(e) => return status(tx, format!("relay error: {e}"), Level::Bad),
+    };
+    let ch = match responder_handshake(conn, &ident, &xw) {
+        Ok(c) => c,
+        Err(e) => return status(tx, format!("handshake failed: {e}"), Level::Bad),
+    };
+    let secret = ch.call_secret().clone();
+    let caller = ch.is_initiator();
+    let mut media = match SecureMediaChannel::new(ch.into_inner(), &secret, caller) {
+        Ok(m) => m,
+        Err(e) => return status(tx, format!("media init: {e}"), Level::Bad),
+    };
+    status(tx, "call connected (E2E)", Level::Good);
+    let (mut a, mut v) = (0u64, 0u64);
+    loop {
+        match media.recv() {
+            Ok(Some(f)) => match f.kind {
+                MediaKind::Audio => a += 1,
+                MediaKind::Video => v += 1,
+            },
+            Ok(None) => break,
+            Err(_) => break,
+        }
+    }
+    status(tx, format!("call ended — {a} audio + {v} video frames decrypted"), Level::Good);
 }
 
 fn save_and(s: &Session, evt: &Sender<Event>, msg: String, level: Level) {

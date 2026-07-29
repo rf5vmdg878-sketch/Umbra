@@ -6,6 +6,7 @@
 //! which SymCrypt does not implement and comes from the RustCrypto `argon2`
 //! crate (RFC 9106).
 
+pub mod call;
 pub mod crypto;
 pub mod groups;
 pub mod identity;
@@ -14,3 +15,4 @@ pub mod share;
 pub mod storage;
 pub mod sync;
 pub mod transport;
+pub mod xfer;

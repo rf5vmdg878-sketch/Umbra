@@ -4,6 +4,7 @@
 //! Phase 3: `chat` — 1:1 encrypted sessions over direct TCP, or over a Tor v3
 //! onion service with `--tor` (requires building with `--features tor`).
 
+mod call_cmd;
 mod chat;
 mod groups_cmd;
 mod share_cmd;
@@ -66,6 +67,75 @@ enum Command {
     Share {
         #[command(subcommand)]
         cmd: ShareCmd,
+    },
+    /// E2E file transfer + voice/video calls routed through a relay.
+    Call {
+        #[command(subcommand)]
+        cmd: CallCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum CallCmd {
+    /// Send a file E2E to a peer through the relay.
+    SendFile {
+        #[arg(long)]
+        store: PathBuf,
+        #[arg(long)]
+        relay: String,
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        file: PathBuf,
+        #[arg(long)]
+        tor: bool,
+        #[arg(long)]
+        state_dir: Option<PathBuf>,
+    },
+    /// Receive a file E2E from a peer through the relay.
+    RecvFile {
+        #[arg(long)]
+        store: PathBuf,
+        #[arg(long)]
+        relay: String,
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        out: PathBuf,
+        #[arg(long)]
+        tor: bool,
+        #[arg(long)]
+        state_dir: Option<PathBuf>,
+    },
+    /// Place a call (streams synthetic voice/video through the relay).
+    Dial {
+        #[arg(long)]
+        store: PathBuf,
+        #[arg(long)]
+        relay: String,
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        video: bool,
+        #[arg(long, default_value_t = 5)]
+        seconds: u32,
+        #[arg(long)]
+        tor: bool,
+        #[arg(long)]
+        state_dir: Option<PathBuf>,
+    },
+    /// Answer a call (receives + decrypts the media stream).
+    Answer {
+        #[arg(long)]
+        store: PathBuf,
+        #[arg(long)]
+        relay: String,
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        tor: bool,
+        #[arg(long)]
+        state_dir: Option<PathBuf>,
     },
 }
 
@@ -406,6 +476,20 @@ fn main() -> Result<()> {
                 tor,
                 state_dir,
             } => groups_cmd::relay_serve(&bind, tor, state_dir.as_deref()),
+        },
+        Command::Call { cmd } => match cmd {
+            CallCmd::SendFile { store, relay, id, file, tor, state_dir } => {
+                call_cmd::send_file_cmd(&store, &relay, &id, &file, tor, state_dir.as_deref())
+            }
+            CallCmd::RecvFile { store, relay, id, out, tor, state_dir } => {
+                call_cmd::recv_file_cmd(&store, &relay, &id, &out, tor, state_dir.as_deref())
+            }
+            CallCmd::Dial { store, relay, id, video, seconds, tor, state_dir } => {
+                call_cmd::dial(&store, &relay, &id, video, seconds, tor, state_dir.as_deref())
+            }
+            CallCmd::Answer { store, relay, id, tor, state_dir } => {
+                call_cmd::answer(&store, &relay, &id, tor, state_dir.as_deref())
+            }
         },
         Command::Share { cmd } => match cmd {
             ShareCmd::Send {

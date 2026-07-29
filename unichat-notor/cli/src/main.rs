@@ -3,6 +3,7 @@
 //! Phase 2: encrypted profile management and contacts.
 //! Phase 3: `chat` — 1:1 encrypted sessions over direct TCP.
 
+mod call_cmd;
 mod chat;
 mod groups_cmd;
 mod share_cmd;
@@ -65,6 +66,61 @@ enum Command {
     Share {
         #[command(subcommand)]
         cmd: ShareCmd,
+    },
+    /// E2E file transfer + voice/video calls routed through a relay.
+    Call {
+        #[command(subcommand)]
+        cmd: CallCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum CallCmd {
+    /// Send a file E2E to a peer through the relay.
+    SendFile {
+        #[arg(long)]
+        store: PathBuf,
+        /// Call-relay address (host:port).
+        #[arg(long)]
+        relay: String,
+        /// Shared call-id (agree on this with the peer, out of band).
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        file: PathBuf,
+    },
+    /// Receive a file E2E from a peer through the relay.
+    RecvFile {
+        #[arg(long)]
+        store: PathBuf,
+        #[arg(long)]
+        relay: String,
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Place a call (streams synthetic voice/video through the relay).
+    Dial {
+        #[arg(long)]
+        store: PathBuf,
+        #[arg(long)]
+        relay: String,
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        video: bool,
+        #[arg(long, default_value_t = 5)]
+        seconds: u32,
+    },
+    /// Answer a call (receives + decrypts the media stream).
+    Answer {
+        #[arg(long)]
+        store: PathBuf,
+        #[arg(long)]
+        relay: String,
+        #[arg(long)]
+        id: String,
     },
 }
 
@@ -337,6 +393,28 @@ fn main() -> Result<()> {
         },
         Command::Relay { cmd } => match cmd {
             RelayCmd::Serve { bind } => groups_cmd::relay_serve(&bind),
+        },
+        Command::Call { cmd } => match cmd {
+            CallCmd::SendFile {
+                store,
+                relay,
+                id,
+                file,
+            } => call_cmd::send_file_cmd(&store, &relay, &id, &file),
+            CallCmd::RecvFile {
+                store,
+                relay,
+                id,
+                out,
+            } => call_cmd::recv_file_cmd(&store, &relay, &id, &out),
+            CallCmd::Dial {
+                store,
+                relay,
+                id,
+                video,
+                seconds,
+            } => call_cmd::dial(&store, &relay, &id, video, seconds),
+            CallCmd::Answer { store, relay, id } => call_cmd::answer(&store, &relay, &id),
         },
         Command::Share { cmd } => match cmd {
             ShareCmd::Send {

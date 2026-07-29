@@ -22,6 +22,7 @@ enum Screen {
     Contacts,
     Groups,
     Mailbox,
+    Calls,
     Servers,
     Settings,
 }
@@ -59,6 +60,13 @@ pub struct App {
     msg_text: String,
     mailbox_bind: String,
     relay_bind: String,
+
+    call_relay: String,
+    call_id: String,
+    call_file: String,
+    call_out: String,
+    call_video: bool,
+    call_seconds: u32,
 
     use_tor: bool,
     text_size: f32,
@@ -103,6 +111,12 @@ impl App {
             msg_text: String::new(),
             mailbox_bind: "127.0.0.1:9900".into(),
             relay_bind: "127.0.0.1:9910".into(),
+            call_relay: "127.0.0.1:9930".into(),
+            call_id: String::new(),
+            call_file: String::new(),
+            call_out: std::env::temp_dir().join("umbra-inbox").to_string_lossy().into_owned(),
+            call_video: false,
+            call_seconds: 5,
             use_tor: false,
             text_size: 15.0,
             show_inspector: true,
@@ -237,6 +251,7 @@ impl eframe::App for App {
                     Screen::Contacts => self.contacts_screen(ui),
                     Screen::Groups => self.groups_screen(ui),
                     Screen::Mailbox => self.mailbox_screen(ui),
+                    Screen::Calls => self.calls_screen(ui),
                     Screen::Servers => self.servers_screen(ui),
                     Screen::Settings => self.settings_screen(ui),
                 });
@@ -400,6 +415,7 @@ impl App {
             (Screen::Contacts, "Contacts"),
             (Screen::Groups, "Groups"),
             (Screen::Mailbox, "Mailbox"),
+            (Screen::Calls, "Calls"),
             (Screen::Servers, "Servers"),
             (Screen::Settings, "Settings"),
         ];
@@ -814,6 +830,95 @@ impl App {
                     message_bubble(ui, m);
                 }
             });
+    }
+
+    fn calls_screen(&mut self, ui: &mut egui::Ui) {
+        Self::screen_title(ui, "e2e transfer + voice/video", "Calls");
+        ui.label(
+            RichText::new("Routed through your relay's call service. Agree a call-id with your peer, then one side dials/sends and the other answers/receives.")
+                .color(theme::MUTED)
+                .size(13.0),
+        );
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            ui.label("Relay");
+            ui.add(egui::TextEdit::singleline(&mut self.call_relay).desired_width(150.0).hint_text("host:9930"));
+            ui.label("Call-id");
+            ui.add(egui::TextEdit::singleline(&mut self.call_id).desired_width(160.0).hint_text("shared secret string"));
+        });
+        ui.add_space(10.0);
+
+        ui.group(|ui| {
+            ui.set_width(ui.available_width());
+            eyebrow(ui, "Encrypted file transfer");
+            ui.horizontal(|ui| {
+                ui.add(egui::TextEdit::singleline(&mut self.call_file).desired_width(280.0).hint_text("file to send"));
+                if ui.button("Pick…").clicked() {
+                    if let Some(p) = rfd::FileDialog::new().pick_file() {
+                        self.call_file = p.to_string_lossy().into_owned();
+                    }
+                }
+                if accent_button(ui, "Send file").clicked() && !self.call_incomplete() && !self.call_file.trim().is_empty() {
+                    self.send(Command::CallSendFile {
+                        relay: self.call_relay.trim().into(),
+                        id: self.call_id.trim().into(),
+                        file: std::path::PathBuf::from(self.call_file.trim()),
+                    });
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.add(egui::TextEdit::singleline(&mut self.call_out).desired_width(280.0).hint_text("receive into folder"));
+                if ui.button("Pick…").clicked() {
+                    if let Some(p) = rfd::FileDialog::new().pick_folder() {
+                        self.call_out = p.to_string_lossy().into_owned();
+                    }
+                }
+                if ui.button("Receive file").clicked() && !self.call_incomplete() {
+                    self.send(Command::CallRecvFile {
+                        relay: self.call_relay.trim().into(),
+                        id: self.call_id.trim().into(),
+                        out_dir: std::path::PathBuf::from(self.call_out.trim()),
+                    });
+                }
+            });
+        });
+        ui.add_space(10.0);
+
+        ui.group(|ui| {
+            ui.set_width(ui.available_width());
+            eyebrow(ui, "Voice / video call");
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut self.call_video, "Video");
+                ui.label("Duration");
+                ui.add(egui::Slider::new(&mut self.call_seconds, 1..=30).suffix("s"));
+            });
+            ui.horizontal(|ui| {
+                if accent_button(ui, "Dial").clicked() && !self.call_incomplete() {
+                    self.send(Command::CallDial {
+                        relay: self.call_relay.trim().into(),
+                        id: self.call_id.trim().into(),
+                        video: self.call_video,
+                        seconds: self.call_seconds,
+                    });
+                }
+                if ui.button("Answer").clicked() && !self.call_incomplete() {
+                    self.send(Command::CallAnswer {
+                        relay: self.call_relay.trim().into(),
+                        id: self.call_id.trim().into(),
+                    });
+                }
+            });
+            ui.label(
+                RichText::new("Media is synthetic in this build (no mic/camera wired); the encrypted media path is real. Watch the status bar for progress.")
+                    .color(theme::FAINT)
+                    .size(11.5),
+            );
+        });
+    }
+
+    /// True if the call form is missing the relay or the call-id.
+    fn call_incomplete(&self) -> bool {
+        self.call_relay.trim().is_empty() || self.call_id.trim().is_empty()
     }
 
     fn servers_screen(&mut self, ui: &mut egui::Ui) {
