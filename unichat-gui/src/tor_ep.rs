@@ -53,6 +53,10 @@ pub fn endpoint() -> Result<Arc<TorEndpoint>, String> {
 /// Decrypt the stored Tor state from the vault into the working state dir, if
 /// present. Call once right after unlocking, before any Tor-routed operation.
 pub fn restore_state(store: &UnlockedStore) {
+    // Always start from a clean state dir: a crash before the previous lock can
+    // leave another profile's onion keys behind, and extract_dir only merges on
+    // top. Wiping first prevents cross-profile Tor-identity contamination.
+    archive::wipe_dir(&state_dir());
     if let Ok(Some(blob)) = store.get_object(TOR_STATE_LABEL) {
         std::fs::create_dir_all(state_dir()).ok();
         let _ = archive::extract_dir(&blob, &state_dir());

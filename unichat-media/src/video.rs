@@ -46,8 +46,16 @@ impl Camera {
 
 /// Decode a received JPEG frame to RGBA for display. Returns `None` on garbage.
 pub fn decode_jpeg(bytes: &[u8]) -> Option<VideoFrame> {
-    let img = image::load_from_memory_with_format(bytes, image::ImageFormat::Jpeg).ok()?;
-    let rgba = img.to_rgba8();
+    // Bound decoded dimensions so a small-but-huge-dimensioned JPEG can't force a
+    // multi-GB RGBA allocation (decompression bomb) from an authenticated-but-
+    // hostile peer. MAX_MEDIA_FRAME only caps the *compressed* size.
+    let mut reader =
+        image::ImageReader::with_format(std::io::Cursor::new(bytes), image::ImageFormat::Jpeg);
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(7680); // 8K ceiling
+    limits.max_image_height = Some(4320);
+    reader.limits(limits);
+    let rgba = reader.decode().ok()?.to_rgba8();
     let (width, height) = (rgba.width(), rgba.height());
     Some(VideoFrame {
         width,

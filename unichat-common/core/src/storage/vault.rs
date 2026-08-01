@@ -69,10 +69,14 @@ pub fn put_object(dir: &Path, mk: &[u8; 32], label: &str, plaintext: &[u8]) -> R
 
     let tmp = path.with_extension("tmp");
     let result = (|| -> Result<()> {
-        std::fs::write(&tmp, &out)?;
-        if path.exists() {
-            std::fs::remove_file(&path)?;
+        {
+            use std::io::Write;
+            let mut f = std::fs::File::create(&tmp)?;
+            f.write_all(&out)?;
+            f.sync_all()?; // durability: data on disk before the rename
         }
+        // rename atomically replaces the destination on Windows + Unix; no
+        // pre-remove (that risked losing the object on a mid-write crash).
         std::fs::rename(&tmp, &path)?;
         Ok(())
     })();

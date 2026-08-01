@@ -53,16 +53,55 @@ fn dir_size(path: &Path) -> u64 {
     total
 }
 
-/// Best-effort secure wipe of a single file: overwrite with zeros, then remove.
+/// Best-effort secure wipe of a regular file: overwrite with zeros (chunked +
+/// fsync'd), then remove. NEVER writes through a symlink — a symlinked target is
+/// unlinked without touching whatever it points at.
 fn wipe_file(path: &Path) -> std::io::Result<u64> {
-    let len = std::fs::metadata(path)?.len();
-    let _ = std::fs::write(path, vec![0u8; len as usize]);
+    use std::io::Write;
+    let meta = std::fs::symlink_metadata(path)?;
+    if meta.file_type().is_symlink() {
+        std::fs::remove_file(path)?;
+        return Ok(0);
+    }
+    let len = meta.len();
+    if let Ok(mut f) = std::fs::OpenOptions::new().write(true).open(path) {
+        let zeros = [0u8; 64 * 1024];
+        let mut left = len;
+        while left > 0 {
+            let n = left.min(zeros.len() as u64) as usize;
+            if f.write_all(&zeros[..n]).is_err() {
+                break;
+            }
+            left -= n as u64;
+        }
+        let _ = f.sync_all();
+    }
     std::fs::remove_file(path)?;
     Ok(len)
 }
 
+/// Refuse obviously dangerous wipe targets — anything with no *named* component
+/// (empty, ".", "..", "/", a drive root like "C:\", a UNC share root) — so a
+/// bad/empty path can never recursively erase an unrelated tree.
+fn refuse_reason(path: &Path) -> Option<&'static str> {
+    use std::path::Component;
+    if path.as_os_str().is_empty() {
+        return Some("empty path");
+    }
+    if !path.components().any(|c| matches!(c, Component::Normal(_))) {
+        return Some("root or current/parent directory (no named component)");
+    }
+    None
+}
+
 /// Wipe one target (file or directory) if it exists, recording the outcome.
 pub fn wipe_path(path: &Path, report: &mut SanitizeReport) {
+    if let Some(reason) = refuse_reason(path) {
+        report
+            .errors
+            .push((path.to_path_buf(), format!("refused unsafe target ({reason})")));
+        return;
+    }
     match std::fs::symlink_metadata(path) {
         Err(_) => report.missing.push(path.to_path_buf()),
         Ok(m) if m.is_dir() => {
@@ -122,13 +161,17 @@ pub fn app_targets(store: &Path) -> Vec<PathBuf> {
     v
 }
 
-/// Any `*.tor-state` / `*.tor-cache` working dirs the CLI leaves in `cwd`.
+/// Any `*.tor-state` / `*.tor-cache` working DIRECTORIES the CLI leaves in `cwd`.
+/// Only real directories match (arti state/cache are dirs) — stray files or
+/// symlinks that merely share the suffix are ignored, so an unrelated
+/// `backup.tor-state` file (or a symlink) is never swept.
 pub fn cli_tor_dirs_in(cwd: &Path) -> Vec<PathBuf> {
     let mut v = Vec::new();
     if let Ok(rd) = std::fs::read_dir(cwd) {
         for e in rd.flatten() {
             let name = e.file_name().to_string_lossy().into_owned();
-            if name.ends_with(".tor-state") || name.ends_with(".tor-cache") {
+            let is_real_dir = e.file_type().map(|t| t.is_dir() && !t.is_symlink()).unwrap_or(false);
+            if is_real_dir && (name.ends_with(".tor-state") || name.ends_with(".tor-cache")) {
                 v.push(e.path());
             }
         }

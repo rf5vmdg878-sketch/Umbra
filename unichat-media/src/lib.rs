@@ -44,11 +44,18 @@ impl CallHandle {
         self.done.load(Ordering::SeqCst)
     }
 
-    /// End the call: signal all threads, close the socket, and join.
+    /// End the call now — identical to dropping the handle.
     pub fn hang_up(self) {
+        // Teardown happens in Drop, so simply dropping the handle (e.g. on an
+        // early return or panic) also stops the mic/camera and joins threads.
+    }
+}
+
+impl Drop for CallHandle {
+    fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
         let _ = self.shutdown.shutdown(std::net::Shutdown::Both);
-        for t in self.threads {
+        for t in self.threads.drain(..) {
             let _ = t.join();
         }
     }

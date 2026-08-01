@@ -78,7 +78,9 @@ pub fn parse_verified(bytes: &[u8], pubkey: &[u8; 32]) -> Result<Vec<(String, [u
 
     let count = u32::from_le_bytes(body[8..12].try_into().unwrap()) as usize;
     let mut off = 12;
-    let mut entries = Vec::with_capacity(count);
+    // Bound the pre-allocation by what the body could actually hold (defense in
+    // depth; `count` is signature-covered but still attacker-influenced text).
+    let mut entries = Vec::with_capacity(count.min(1 + body.len() / 34));
     for _ in 0..count {
         if off + 2 > body.len() {
             return Err("manifest truncated".into());
@@ -122,15 +124,19 @@ pub fn verify_startup(pubkey: &[u8; 32]) -> IntegrityStatus {
     if pubkey == &[0u8; 32] {
         return IntegrityStatus::Unverified("no release key provisioned".into());
     }
+    // Past the all-zero check the key is ARMED, so any inability to verify is
+    // treated as tampering (fail closed) — NOT as a benign developer build.
     let dir = match exe_dir() {
         Ok(d) => d,
-        Err(e) => return IntegrityStatus::Unverified(e),
+        Err(e) => return IntegrityStatus::Tampered(e),
     };
     let manifest_path = dir.join(MANIFEST_NAME);
     let bytes = match std::fs::read(&manifest_path) {
         Ok(b) => b,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return IntegrityStatus::Unverified("no manifest next to executable".into())
+            // With the key armed, a missing manifest is an attack (delete-to-
+            // downgrade), not a dev build. Refuse to run.
+            return IntegrityStatus::Tampered("integrity manifest is missing".into());
         }
         Err(e) => return IntegrityStatus::Tampered(format!("manifest unreadable: {e}")),
     };
@@ -145,6 +151,21 @@ pub fn verify_startup(pubkey: &[u8; 32]) -> IntegrityStatus {
             Ok(_) => return IntegrityStatus::Tampered(format!("{rel} does not match manifest")),
             Err(e) => return IntegrityStatus::Tampered(format!("{rel} unreadable: {e}")),
         }
+    }
+    // The actually-running image must itself be a covered, matching entry — else
+    // a tampered binary run side-by-side under a different name would pass by
+    // hashing only the untouched listed files.
+    match std::env::current_exe()
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+    {
+        Some(name) if entries.iter().any(|(rel, _)| rel == &name) => {}
+        Some(name) => {
+            return IntegrityStatus::Tampered(format!(
+                "running executable '{name}' is not covered by the manifest"
+            ))
+        }
+        None => return IntegrityStatus::Tampered("cannot identify running executable".into()),
     }
     IntegrityStatus::Verified
 }

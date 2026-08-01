@@ -39,7 +39,10 @@ pub fn install(ctx: &egui::Context) {
     v.widgets.inactive.bg_fill = SURFACE_2;
     v.widgets.inactive.weak_bg_fill = SURFACE_2;
     v.widgets.inactive.fg_stroke = Stroke::new(1.0, TEXT);
-    v.widgets.inactive.bg_stroke = Stroke::new(1.0, LINE_2);
+    // No resting border: with this dark palette a bordered rect read as a hard
+    // "black box" around every button. The subtle fill gives shape; the corona
+    // border appears only on hover/active for affordance.
+    v.widgets.inactive.bg_stroke = Stroke::NONE;
     v.widgets.inactive.corner_radius = r;
 
     v.widgets.hovered.bg_fill = Color32::from_rgb(0x1c, 0x24, 0x38);

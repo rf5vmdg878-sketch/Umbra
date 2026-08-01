@@ -299,14 +299,33 @@ impl<W: Write> MediaSender<W> {
 pub struct MediaReceiver<R> {
     r: R,
     key: AeadKey,
+    last_seq: Option<u32>,
 }
 
 impl<R: Read> MediaReceiver<R> {
     pub fn new(r: R, recv_key: AeadKey) -> Self {
-        Self { r, key: recv_key }
+        Self {
+            r,
+            key: recv_key,
+            last_seq: None,
+        }
     }
     pub fn recv(&mut self) -> Result<Option<MediaFrame>> {
-        read_media_frame(&mut self.r, &self.key)
+        match read_media_frame(&mut self.r, &self.key)? {
+            Some(frame) => {
+                // Enforce the documented replay/reorder guarantee: seq (also the
+                // AEAD nonce counter) must strictly increase within a direction.
+                // TCP is ordered, so a non-increasing seq means injection/replay.
+                if let Some(last) = self.last_seq {
+                    if frame.seq <= last {
+                        return Err(CryptoError::Protocol("media frame replay or reorder"));
+                    }
+                }
+                self.last_seq = Some(frame.seq);
+                Ok(Some(frame))
+            }
+            None => Ok(None),
+        }
     }
 }
 

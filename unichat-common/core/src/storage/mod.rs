@@ -186,10 +186,15 @@ impl UnlockedStore {
         let path = self.dir.join(ANCHOR);
         let tmp = path.with_extension("tmp");
         let result = (|| -> Result<()> {
-            std::fs::write(&tmp, &anchor)?;
-            if path.exists() {
-                std::fs::remove_file(&path)?;
+            {
+                use std::io::Write;
+                let mut f = std::fs::File::create(&tmp)?;
+                f.write_all(&anchor)?;
+                f.sync_all()?; // flush data to disk BEFORE the rename (durability)
             }
+            // rename atomically REPLACES an existing destination on both Windows
+            // and Unix. The old "remove then rename" opened a crash window that
+            // could delete the live anchor and lose the whole vault.
             std::fs::rename(&tmp, &path)?;
             Ok(())
         })();

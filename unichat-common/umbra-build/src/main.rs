@@ -153,6 +153,10 @@ fn ensure_symcrypt(root: &Path, o: &Opts) -> Option<String> {
     run("tar", &["xzf", &tgz.to_string_lossy(), "-C", &lin.to_string_lossy()], root, &BTreeMap::new());
     // Try to surface any libsymcrypt.so* into the linux/ root for a stable path.
     flatten_so(&lin);
+    // The linker resolves `-lsymcrypt` to the UNVERSIONED `libsymcrypt.so`; the
+    // release tarball usually ships only `libsymcrypt.so.103[.x]`, so create the
+    // dev symlink if it's missing, else the link fails even with -L.
+    ensure_so_symlink(&lin);
     if !(lin.join("libsymcrypt.so").exists()
         || std::fs::read_dir(&lin).map(|rd| rd.flatten().any(|e| e.file_name().to_string_lossy().starts_with("libsymcrypt.so"))).unwrap_or(false))
     {
@@ -164,6 +168,29 @@ fn ensure_symcrypt(root: &Path, o: &Opts) -> Option<String> {
     }
     Some(lin.to_string_lossy().into_owned())
 }
+
+/// Ensure an unversioned `libsymcrypt.so` exists in `dir`, symlinked to the
+/// highest-versioned `libsymcrypt.so.*` present, so `-lsymcrypt` resolves.
+#[cfg(unix)]
+fn ensure_so_symlink(dir: &Path) {
+    if dir.join("libsymcrypt.so").exists() {
+        return;
+    }
+    let mut best: Option<String> = None;
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        for e in rd.flatten() {
+            let n = e.file_name().to_string_lossy().into_owned();
+            if n.starts_with("libsymcrypt.so.") && best.as_deref().map(|b| n.as_str() > b).unwrap_or(true) {
+                best = Some(n);
+            }
+        }
+    }
+    if let Some(target) = best {
+        let _ = std::os::unix::fs::symlink(&target, dir.join("libsymcrypt.so"));
+    }
+}
+#[cfg(not(unix))]
+fn ensure_so_symlink(_dir: &Path) {}
 
 /// Recursively move any libsymcrypt.so* found under `dir` up into `dir` itself.
 fn flatten_so(dir: &Path) {
@@ -188,8 +215,15 @@ fn build_env(symcrypt: &Option<String>) -> BTreeMap<String, String> {
     let mut env = BTreeMap::new();
     if let Some(path) = symcrypt {
         env.insert("SYMCRYPT_LIB_PATH".into(), path.clone());
-        // Find the .so next to the executable at runtime.
-        env.insert("RUSTFLAGS".into(), "-C link-arg=-Wl,-rpath,$ORIGIN".into());
+        // The symcrypt-sys Linux build emits `-l dylib=symcrypt` but NO
+        // link-search path (unlike its Windows branch), so without `-L native`
+        // the link fails with `cannot find -lsymcrypt`. Add the search path
+        // ourselves. `-rpath,$ORIGIN` then finds the co-located .so at runtime
+        // ($ORIGIN reaches ld literally because Command runs cargo with no shell).
+        env.insert(
+            "RUSTFLAGS".into(),
+            format!("-L native={path} -C link-arg=-Wl,-rpath,$ORIGIN"),
+        );
     }
     env
 }
@@ -354,9 +388,14 @@ fn package(root: &Path, bin_dir: &Path, bins: &[&str], variant: &str, o: &Opts) 
     // A Linux launcher that sets LD_LIBRARY_PATH to the archive dir (belt and
     // braces alongside the rpath=$ORIGIN baked in at link time).
     if !is_windows() {
-        let launcher = "#!/bin/sh\ncd \"$(dirname \"$0\")\"\nexport LD_LIBRARY_PATH=\"$(pwd):$LD_LIBRARY_PATH\"\nexec ./umbra \"$@\"\n";
-        let lp = stage.join("umbra.sh");
-        let _ = std::fs::write(&lp, launcher);
+        // Launcher targets THIS variant's primary binary (umbra / umbra-relay),
+        // not a hardcoded "umbra".
+        if let Some(primary) = bins.first() {
+            let launcher = format!(
+                "#!/bin/sh\ncd \"$(dirname \"$0\")\"\nexport LD_LIBRARY_PATH=\"$(pwd):$LD_LIBRARY_PATH\"\nexec ./{primary} \"$@\"\n"
+            );
+            let _ = std::fs::write(stage.join(format!("{primary}.sh")), launcher);
+        }
     }
 
     // If signing, generate the manifest over the STAGED files so the archive is
